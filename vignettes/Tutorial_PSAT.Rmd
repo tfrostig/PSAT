@@ -1,0 +1,454 @@
+---
+title: 'Post Selection After Aggregation Tests'
+shorttitle: 'PSAT'
+author:
+- name: Tzviel Frostig
+  affiliation: Department of Statistics & Operation Research, Tel Aviv University 
+  email: tfrostig@gmail.com 
+bibliography: Bibliography.bib
+output:
+  BiocStyle::html_document:
+    toc_float: true
+  BiocStyle::pdf_document: default
+package: PSATinference
+abstract: |
+   Tutorial on how to use the package PSATinference. 
+vignette: |
+    %\VignetteIndexEntry{PSAT - Post Selection After Aggregation Tests}
+    %\VignetteEngine{knitr::rmarkdown}
+    %\VignetteEncoding{UTF-8}
+editor_options: 
+  chunk_output_type: console
+---
+
+
+# Introduction to `r Biocpkg('PSATinference')`
+
+In many modern fields of science, there are typically thousands to hundred of thousands of hypotheses being analyzed (QTL, GWAS) (@Schaid2018a). A reasonable way to handle the large number of hypotheses is to group the test statsitics to to regions of intrest (ROI), allowing for a powerful identification of associations at the ROI level. Then following up with the analysis of individual hypotheses within the selected ROIs. 
+This guide provides an overview for the R package `PSATinference`, allowing for such an analysis, we will use an artificial example to show such an analysis and demonstrate the use of the package. 
+
+The PSATinference pacakge provides functionalities for performing inference on multivariate normal vectors that are selected for a follow-up analysis based on a qudratic or linear aggregate tests.
+It is praticulary suitable for infering on coefficients from linear models and genralized linear model (@Heller2019) Suppose that we observe $y \sim N(\mu, \Sigma)$ and that we are interested in conducting inference on the individual coordinates of $\mu$ only if we can reject a quadratic or linear test of the form:
+
+$$
+y' K y > c > 0
+$$
+
+or 
+
+$$ 
+a' y > c  
+$$
+
+for some pre-determined threshold $c$. Then, we must account for the fact that we have selected the model via a data driven method in order to obtain valid p-values, confidence intervals that achieve the desired coverage rate, and efficient point estimates.
+
+
+
+## Installation
+
+There are two ways to download and install the most current of `r Biocpkg('PSATinference')`. The most recent version of the package will be found at [github.com/PSATinference.address](https://PSATinference.address.). 
+
+- Install development version from github:
+
+```{r, eval=FALSE}
+require('devtools')
+library('PSATinference')
+
+```
+
+- Install stable version from Bioconductor:
+
+```{r, eval=FALSE}
+
+```
+
+
+```{r, include = FALSE, echo = FALSE}
+### Place holder for now when we will decide on the example i will add it as data to the package 
+## Generating data for GWAS 
+library(MASS)
+library(dplyr)
+
+set.seed(999)
+
+p       <- 150 
+rho     <- 0.7
+cov.mat <- rho^abs(outer(1:p, 1:p, '-'))
+
+
+#### Create SNPs transforms normal vector into 0,1,2 while keeping MAF
+snpMaker <- function(x.vec, maf) {
+  g.vec <- x.vec 
+  g.vec[x.vec <= qnorm(1 - maf)] <- 0
+  g.vec[x.vec >  qnorm(1 - maf)]  <- 1
+  g.vec[x.vec >  qnorm(1 - (1 / 3) * maf)]  <- 2
+  return(g.vec)
+}
+
+x           <- mvrnorm(2000, rep(0, p), cov.mat)
+maf.vec     <- rbeta(p, 1.1 ,3) 
+G           <- t(apply(x, 1, snpMaker, maf.vec))
+colnames(G) <- paste0(c(rep('Gene_a', 10), rep('Gene_b', p - 20), rep('Gene_c', 10)), '_', c(1:10, 1:(p - 20), 1:10))
+
+E           <- mvrnorm(2000, c(10, 2), diag(c(1, 0.5))) 
+E[ ,2]      <- round(E[ ,2])
+colnames(E) <- c('Avg.Calories', 'Num.Sibilings')
+
+
+beta.vec <- c(0.15, rep(0, p - 4), rep(0.125, 3)) 
+b.vec    <- c(1, 0)
+y.pheno  <- 15 + drop(G %*% beta.vec) + drop(E %*% b.vec) + rnorm(2000)
+
+```
+
+# Introduction to example - GWAS 
+
+Our example is a fake GWAS for an imaginery fictional phenotype. We have obtained the mapping of the genome $G \in \{0,1,2\}^{n\times 170}$ of $n = 2000$ subjects, which includes 3 Genes (a,b, and c). The disease phenotype, $y$, was measured for them. We also have two enviormental explaintory variables, $E \in R^{n\times 2}$. 
+We will model the phenotype using a linear model 
+
+$$ y = G \beta + E b + \epsilon$$. 
+
+We'll take a quick glimpse to our explainatory variables 
+
+```{r}
+glimpse(E)
+glimpse(G)
+```
+
+We begin by fitting the linear model, we will define $X$ to be the binding of columns of $G$ and $E$, the estimator is 
+
+$$ \hat{\beta} = (X'X)^{-1}X'y.$$ 
+
+The expected value and variance are 
+
+$$ E(\hat{\beta}) = \beta, \; \Sigma  \equiv Var(\hat{\beta}) = \sigma^2 (X'X)^{-1}  $$. 
+
+We will obtain the estimator, and the variance covariance matrix. 
+
+```{r}
+X         <- cbind(1, G, E)
+beta.hat  <- solve(t(X) %*% X) %*% t(X) %*% y.pheno
+
+sigma.hat <- sum((X %*% beta.hat - y.pheno)^2) / (nrow(X) - ncol(X))
+var.beta  <- sigma.hat * solve(t(X) %*% X)
+```
+
+We now have all the information required for applying the PSAT procedure. We will want to conduct an aggregate test for each Gene, further testing only SNPs that consist of Genes which passed the test. 
+We will begin by using the WALD quadratic test. We will define our threshold $c_i$ for each gebe as the 0.99 quantile of chi-square distribution with appropriate degree of freedom. 
+Let $S_i$ be the set of indices of SNPs consisting of Gene $i$ we first test in the Gene level 
+
+## Post-Selection Quadratic Aggregate Test 
+$$ 
+\hat{\beta}_{S_i}' \Sigma_{{S_i}}^{-1} \hat{\beta}_{S_i} > \chi^2_{|S_i|, 0.99}.
+$$
+
+```{r}
+S.1 <- grep('_a_', colnames(X))
+S.2 <- grep('_b_', colnames(X))
+S.3 <- grep('_c_', colnames(X))
+```
+
+Conducting the WALD test on the genes results in 
+
+```{r, echo = FALSE}
+cat(paste0(
+  'Gene 1 test statistic ', 
+  round(t(beta.hat[S.1]) %*% solve(var.beta[S.1, S.1]) %*%  beta.hat[S.1], 3),
+  ' which passes the threshold of ', round(qchisq(0.99, length(S.1)), 3), ' \n', 
+  'Gene 2 test statistic ', 
+  round(t(beta.hat[S.2]) %*% solve(var.beta[S.2, S.2]) %*%  beta.hat[S.2], 3),
+  ' which does not passes the threshold of ', round(qchisq(0.99, length(S.2)), 3), ' \n', 
+  'Gene 3 test statistic ', 
+  round(t(beta.hat[S.3]) %*% solve(var.beta[S.3, S.3]) %*%  beta.hat[S.3], 3),
+  ' which passes the threshold of ', round(qchisq(0.99, length(S.3)), 3)))
+
+
+```
+
+We then further test all $$j \in S_i: \hat{\beta}_{S_i}' \Sigma_{{S_i}}^{-1} \hat{\beta}_{S_i} > \chi^2_{|S_i|, 0.99}$$. 
+
+We can use the`PSATQuadratic` function which is suited for quadratic tests from the type $\hat{\beta_{S_i}}' K_{S_i} \hat{\beta_{S_i}} > c$, in the case of Wald test $K = \Sigma_{S_i}^{-1}$, it will conduct the aggregate test as well testing individual SNPs. 
+Further explaination on the various parameters that `PSATQuadratic` accepts: 
+To apply the function we need to define the vector `y` (not to confuse with the phenotype) of test statistics used for inference, we assume that $y \sim N(\mu, \Sigma)$, `cov.mat` is the covariance matrix $\Sigma$, `K` is the test matrix and `threshold` is the threshold used in the aggregate test. 
+We also define the type of output we desire, `contrast` an optional matrix with number of columns as length `y`, defines which linear contrasts to test, `alternative` the direcion of test for each linear combination (length needs to be equal to number of columns in `contrast` matrix.
+`test.type` specifies which type of test to condcut either `UMPU` (Unimormly Most Powerful Unbiased test, for more details see (@fithian2014optimal)), or `symmetric`. Note that the `symmetric` version is faster, while the power gain in `UMPU` is not substantial.
+`pval.type` and `ci.type` defines the type of confidence interval and testing to conduct the options are `'global', 'hybrid', 'polyhedral', 'naive'`.
+Generally speaking, the confidence interval method `global-null` is quite computationally intensive while the `polyhedral` method is very fast, yet somewhat less powerful when the signal is sparse. Similarly, the p-value and CI methods `hybrid`, `switch` and `global-null` are computationally intensive as they rely on the `global-null` method while the `polyhedral` method does not.
+The estimation methods are `naive` which just returns the value of the test statistics, and `moment` which estimates the expected value based on the expected value of the truncated normal with parameters found using the `polyhedral` method. 
+For a thorough description of the various methods see (@Heller2019). 
+The default set for `PSATQuadratic` function produces all the available estimators (`moment`, `naive`), testing method (`naive`, `polyhedral`, `global-null`, `hybrid`, and `switch`) and testing type (`symmetric` and `UMPU`). 
+
+
+## Using PSATQuadratic with defaults 
+
+```{r}
+gene.1.result <- PSATinference::PSATQuadratic(y         = beta.hat[S.1], 
+                                              cov.mat   = var.beta[S.1, S.1], 
+                                              K         = solve(var.beta[S.1, S.1]),
+                                              threshold = qchisq(0.99, length(S.1)))
+gene.3.result <- PSATinference::PSATQuadratic(y         = beta.hat[S.3], 
+                                              cov.mat   = var.beta[S.3, S.3], 
+                                              K         = solve(var.beta[S.3, S.3]),
+                                              threshold = qchisq(0.99, length(S.3)))
+
+
+
+
+```
+
+### Plotting results 
+
+We can now combine the reuslts of all the testing and evaluate them graphically, we will inspect the `hybrid` and `polyhedral` 
+
+```{r, warning = FALSE}
+library(ggplot2)
+PSATinference::plotFunc(rbind(gene.1.result$CI, gene.3.result$CI) %>% select(contains('symmetric')), 
+                        rbind(gene.1.result$Point.estimation, gene.3.result$Point.estimation),
+                        truth = beta.vec[c(S.1, S.3) - 1],
+                        base.line = 0) ## gene.2.results didn't pass the threshold 
+
+``` 
+
+## Contrasts and alternative  
+
+If we were for example more intrestsed in testing some linear combination of parameters we just need to define the `contrast` matrix, we will demonstrate on Gene 1, we will test the difference between the first and second SNP, and the difference between the 10th and 9th SNP 
+
+```{r}
+diff.cont  <- matrix(0, nrow = 2, ncol = 10)
+diff.cont[1, 1] <- 1
+diff.cont[1, 2] <- 1
+diff.cont[2, 9] <- 1
+diff.cont[2, 10] <- -1
+contrasts <- rbind(diag(length(beta.hat[S.1])), diff.cont)
+
+
+```
+
+Passing it to the `PSATQuadratic`, we will also change the direction of testing instead of `two.sided` (the default value of alternative), we will test the alternative that it is greater than 0 
+
+```{r, warning = FALSE}
+gene.1.result <- PSATinference::PSATQuadratic(y         = beta.hat[S.1], 
+                                              cov.mat   = var.beta[S.1, S.1], 
+                                              K         = solve(var.beta[S.1, S.1]),
+                                              threshold = qchisq(0.99, length(S.1)),
+                                              alternative = rep('greater', nrow(contrasts)),
+                                              contrast    = contrasts)
+
+``` 
+
+Plotting the results, we can see that all confidence interval are now one sided. 
+
+```{r, warning=FALSE}
+
+PSATinference::plotFunc(gene.1.result$CI %>% select(contains('symmetric')), 
+                        gene.1.result$Point.estimation,
+                        truth = contrasts %*% beta.vec[S.1 - 1], ## No intercept 
+                        base.line = 0) 
+```
+
+
+## Using a different test matrix (K) 
+
+One does not have to restrict himself to using only Wald test, as said every quadratic test can be applied and tested as long as $K$ is semi-postiive definite and symmetric. The only requirement is that the user will specify a threshold. For Quadratic tests, one can use `CompQuadForm` library to obtain it.
+For example let's suppose that $K$ is a diagonal matrix where $K_{i,i} = \frac{1}{i}$. The distribution of the test statistics $\hat{\beta} K \hat{\beta}$ is not known. We can find a quantile using `getThresholdQuadratic`, the function is based on Liu et al. method (@liu2009new) it is a wrapper for a function available in the R package `CompQuadForm` for more details and comparision between the various methods see (@duchesne2010computing).
+
+```{r, warning = FALSE}
+k.new         <- diag(1 / 1:10)
+threshold.new <- PSATinference::getThresholdQuadratic(0.99, 
+                                                      cov.mat = var.beta[S.1, S.1], 
+                                                      K = k.new)
+stat.new      <-  t(beta.hat[S.1]) %*% k.new %*% beta.hat[S.1]
+
+gene.1.result <- PSATinference::PSATQuadratic(y         = beta.hat[S.1], 
+                                              cov.mat   = var.beta[S.1, S.1], 
+                                              K         = k.new,
+                                              threshold = threshold.new,
+                                              alternative = rep('two.sided', nrow(contrasts)),
+                                              contrast    = contrasts)
+
+PSATinference::plotFunc(gene.1.result$CI %>% select(contains('symmetric')), 
+                        gene.1.result$Point.estimation,
+                        truth = contrasts %*% beta.vec[c(S.1)],
+                        base.line = 0) 
+```
+
+
+
+## Using PSATLinear 
+
+So far we dealt with quadratic aggregate tests of the form $y' K y$, however, it could be that the aggregate test will be of linear form $a' y$, an importrant destinction that here we can decide if to conduct a two.sided or one sided test.  
+We will focus on Gene 3, the linear test we will conduct $a = (1, \cdots, 1)'$, which will yield the following test statisic distribution
+
+$$ a' \hat{\beta} \sim N\left( a' \beta , a' \sigma^2 (X'X)^{-1} a \right)$$.
+
+All the parameters are used the same way as in `PSATQuadratic` the sole difference is that instead of test matrix, $K$, we have a test vector $a$, and since there is not a single threshold value it is seperated to the parameters `threshold.upper` and `threshold.lower`.
+
+```{r, warning = FALSE}
+
+a.vec            <- rep(1, length(S.3)) 
+threshold.linear.upper <- qnorm(0.99, 0, sqrt(t(a.vec) %*% var.beta[S.3, S.3] %*% a.vec))
+threshold.linear.lower <- qnorm(0.01, 0, sqrt(t(a.vec) %*% var.beta[S.3, S.3] %*% a.vec))
+
+gene.3.result <- PSATinference::PSATLinear(y         = beta.hat[S.3], 
+                                           cov.mat   = var.beta[S.3, S.3], 
+                                           a.vec     = a.vec,
+                                           threshold.upper = threshold.linear.upper,
+                                           threshold.lower = threshold.linear.lower)
+
+PSATinference::plotFunc(gene.3.result$CI %>% select(contains('symmetric')), 
+                        gene.3.result$Point.estimation,
+                        truth = beta.vec[c(S.3)],
+                        base.line = 0) 
+```
+
+
+## GLM - Logistic Regression Example 
+
+The method is not limited to the linear regression, but can be applied for any test-statsitic that is distributed a Gaussian under the null. This allows to apply it for different GLM as well. 
+We show here an example for the logistic regression scenario, and how to apply the PSAT methdology using `PSATinference`. 
+
+
+```{r}
+library(MASS)
+library(dplyr)
+
+set.seed(999)
+
+p       <- 150 
+rho     <- 0.7
+cov.mat <- rho^abs(outer(1:p, 1:p, '-'))
+
+x           <- mvrnorm(2000, rep(0, p), cov.mat)
+maf.vec     <- rbeta(p, 1.1 ,3) 
+G           <- t(apply(x, 1, snpMaker, maf.vec))
+colnames(G) <- paste0(c(rep('Gene_a', 10), rep('Gene_b', p - 20), rep('Gene_c', 10)), '_', c(1:10, 1:(p - 20), 1:10))
+
+E           <- mvrnorm(2000, c(10, 2), diag(c(1, 0.5))) 
+E[ ,2]      <- round(E[ ,2])
+colnames(E) <- c('Avg.Calories', 'Num.Sibilings')
+
+
+
+
+beta.vec <- c(0.4, rep(0, p - 4), rep(-0.25, 3)) 
+b.vec    <- c(-0.2, 0)
+y.pheno  <- rbinom(n = 2000, 
+                   size = 1, 
+                   prob = 1 / (1 + exp(-(drop(G %*% beta.vec) + drop(E %*% b.vec))))) 
+
+X         <- cbind(1, G, E)
+
+```
+
+For large enough $n$ the coefficients obtained from logistic regression are distributed as the following normal distribution 
+
+\begin{equation}
+\beta \sim N(\beta, (X' W X)^{-1})
+\end{equation} 
+
+Where $W_{i,i} = \pi (1 - \pi_i)$ and $W_{i,j} =0 \;  \forall i \neq j$. $pi = P(y = 1)$. 
+
+We will conduct the WALD quadratic test, notice, that the procedure is the same as was shown previously for the linear regression. 
+
+
+```{r}
+logistic.lm <- glm(y.pheno ~ X[ ,-1], family = 'binomial') ### Removing the intercept column 
+beta.hat    <- logistic.lm$coefficients
+
+## Estimating Phat  
+p.hat.org    <- drop(1 / (1 + exp(-X %*% beta.hat)))
+W.gwas       <- diag(p.hat.org * (1 - p.hat.org))
+est.cov.org  <- solve(t(X) %*% W.gwas %*% X)
+```
+
+After finding the covaraince matrix we continue as usual. We will use the same code as in the linear regression example. 
+
+```{r}
+S.1 <- grep('_a_', colnames(X))
+S.2 <- grep('_b_', colnames(X))
+S.3 <- grep('_c_', colnames(X))
+```
+
+Conducting the WALD test on the genes results in 
+
+```{r, echo = FALSE}
+cat(paste0(
+  'Gene 1 test statistic ', 
+  round(t(beta.hat[S.1]) %*% solve(est.cov.org[S.1, S.1]) %*%  beta.hat[S.1], 3),
+  ' which passes the threshold of ', round(qchisq(0.99, length(S.1)), 3), ' \n', 
+  'Gene 2 test statistic ', 
+  round(t(beta.hat[S.2]) %*% solve(est.cov.org[S.2, S.2]) %*%  beta.hat[S.2], 3),
+  ' which does not passes the threshold of ', round(qchisq(0.99, length(S.2)), 3), ' \n', 
+  'Gene 3 test statistic ', 
+  round(t(beta.hat[S.3]) %*% solve(est.cov.org[S.3, S.3]) %*%  beta.hat[S.3], 3),
+  ' which does not passes the threshold of ', round(qchisq(0.99, length(S.3)), 3)))
+
+
+```
+
+We then further test all $$j \in S_i: \hat{\beta}_{S_i}' \Sigma_{{S_i}}^{-1} \hat{\beta}_{S_i} > \chi^2_{|S_i|, 0.99}$$. 
+
+
+### Using PSATQuadratic with defaults 
+
+```{r}
+gene.1.result <- PSATinference::PSATQuadratic(y         = beta.hat[S.1], 
+                               cov.mat   = est.cov.org[S.1, S.1], 
+                               K         = solve(est.cov.org[S.1, S.1]),
+                               threshold = qchisq(0.99, length(S.1)))
+
+
+
+
+```
+
+### Plotting results 
+
+We can now combine the reuslts of all the testing and evaluate them graphically, we will inspect the `hybrid` and `polyhedral` and `switch` CIs. 
+
+```{r, warning = FALSE}
+PSATinference::plotFunc(gene.1.result$CI %>% select(contains('symmetric')), 
+         gene.1.result$Point.estimation,
+         truth = beta.vec[c(S.1) - 1],
+         base.line = 0) ## gene.2.results didn't pass the threshold 
+
+``` 
+
+# P-values Aggregation 
+
+The package also allows for post selection following P-value Aggregation tests such as Fisher or Pearson. These types of tests do not require the normal distribution assumption, however they it is assumed that the p-values are independent from one another. 
+For further details see @heller2018post. 
+
+
+```{r, include = FALSE}
+set.seed(123)
+beta       <- c(rnorm(10, 0, 2.5), rep(0, 32))
+pmat1sided <- matrix(1 - pnorm(rnorm(40, beta)), nrow = 2, ncol = 20, byrow = TRUE) #one-sided p-values
+pmat2sided <- 2 * pmin(pmat1sided, 1 - pmat1sided) #two-sided p-values
+```
+
+In our example we have 2 studies, each with 20 hypothesis being tested. We first test each study to find any assocation using the Fisher aggregate testing, if one is found we further test each hypothesis seperately. 
+
+```{r}
+out.Fisher <-  PSATinference::aggregatePvalues(p.mat = pmat1sided, 
+                                               global.test = 'Fisher',
+                                               pval.threshold = 0.01)
+print(out.Fisher)
+```
+
+The function resturns a list containing three elements: 1. `pF` the global null tests p-values according to the chosen `global.test`, and the corresponding selection adjusted p-values for the the groups which passed the test. 
+
+\clearpage
+# Contributors
+
+* Amit Meir wrote the original code, and designed `r Biocpkg('PSATinference')`.
+
+
+# Version information
+
+
+```{r session}
+sessionInfo()
+```
+
+# Bibliography

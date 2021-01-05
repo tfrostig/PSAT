@@ -1,0 +1,128 @@
+---
+title: "Inference After Quadratic Aggregate Testing"
+author: "Amit Meir & Tzviel Frostig"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Inference After Quadratic Aggregate Testing}
+  %\VignetteEncoding{UTF-8}
+  %\VignetteEngine{knitr::rmarkdown}
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include = FALSE}
+library(PSATinference)
+library(MASS)
+library(ggplot2)
+library(dplyr)
+library(reshape2)
+set.seed(5)
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+
+## Inference for Normal Means 
+
+The PSATinference pacakge provides functionalities for performing inference on multivariate normal vectors and generalized linear models that pass a qudratic aggregate tests. Suppose that we observe $y \sim N(\mu, \Sigma)$ and that we are interested in conducting inference on the individual coordinates of $\mu$ only if we can reject a quadratic test of the form:
+
+$$
+y^{T} K y > c > 0
+$$
+
+for some pre-determined threshold $c$. Then, we must account for the fact that we have selected the model via a data driven method in order to obtain valid p-values, confidence intervals that achieve the desired coverage rate, and efficient point estimates. We begin by generating a dataset by sampling multivariate normal vectors and screening with a Wald test, so $K = \Sigma^{-1}$.
+
+```{r generateNormal, warning = FALSE, message = FALSE}
+p             <- 8 
+cov.mat       <- matrix(0.3, ncol = p, nrow = p) 
+diag(cov.mat) <- 1 
+beta.vec      <- c(2.5, 0.5, rep(0, 6))
+
+threshold <- qchisq(1 - 0.005, p)
+K         <- solve(cov.mat)
+test.stat <- 0
+while(test.stat < threshold) {
+  y         <- MASS:::mvrnorm(1, beta.vec, cov.mat)
+  test.stat <- drop(t(y) %*% K %*% y)
+}
+print(round(y, 2))
+```
+
+
+Our threshold is `r round(threshold, 1)` and the realized test statistic is `r round(test.stat, 2)`, so we just barely passed the aggregate test. Now, let us use the `PSATQuadratic` function to conduct inference. The `PSATQuadratic` function can be used to compute several different types of confidence intervals and p-values. Generally speaking, the confidence interval method `global-null` is quite computationally intensive while the `polyhedral` method is very fast, yet somewhat less powerful when the signal is sparse. Similarly, the p-value methods `hybrid`, `switch` and `global-null` are computationally intensive and the `polyhedral` method is not. In the following, we also demonstrate an option to provide the inference function with an optional set of contrasts to be tested/estimated as a matrix of dimension $l \times p$ where $l$ is the number of contrasts. If no such matrix is provided, the function will estimated the mean vector of $y$. Specifically, we test the difference between the first and second coordinates of $y$, as well as the seventh and eighth coordinates. 
+Notice that we also specify which kind of test and CI to build, either symmetric or UMPU (UMAU for CI). The UMPU allows for slightly more powerful but somewhat slows the computations. 
+
+
+```{r allfit}
+diff.cont       <- matrix(0, nrow = 2, ncol = p)
+diff.cont[1, 1] <- 1
+diff.cont[1, 2] <- -1
+diff.cont[2, 7] <- 1
+diff.cont[2, 8] <- -1
+contrasts <- rbind(diag(length(y)), diff.cont)
+
+psat.res <- PSATinference::PSATQuadratic(y, 
+                                         cov.mat = cov.mat, 
+                                         alpha = 0.05, 
+                                         K = solve(cov.mat), 
+                                         threshold = threshold, 
+                                         contrast = contrasts,
+                                         pval.type = c('global', 'hybrid',
+                                                       'polyhedral', 'naive', 'switch'),
+                                         test.type = c('symmetric', 'UMPU'))
+
+```
+
+
+Notice that when calling `PSATQuadratic`, we listed several methods for confidence interval and p-value computations. The function will compute all of the requested quantities. A good way to examine the outputs of the function is to plot the estimates and confidence intervals, in the following function call we will provide the plotting function with the ground truth so we can see whether our confidence intervals have successfully identified the true signal.  we will use dplyr select function to choose which types of CI to plot. 
+Notice that while the global CI is the longest it is the only one that reject the null hypothesis for the first contrast. 
+We can see that the moment estimator (on top of the polyhedral.symmetric CI), is shrinked towards the truth compared to the naive estimator.  
+
+```{r, fig.width=10, echo = FALSE}
+
+plot.df <- plotFunc(psat.res$CI %>% 
+                      select(global, switch.symmetric, naive, polyhedral.symmetric), 
+                    psat.res$Point.estimation, 
+                    base.line = 0,
+                    truth = contrasts %*% beta.vec)
+
+plot.df
+
+```
+
+We can also which side to test for each contrast. That is whether to conduct a two.sided or one.sided test. The parameter `alternative` accepts a vector of strings (two.sided, less, greater), which determines which test to conduct for each contrast. 
+
+```{r}
+alternative <- c(rep('less', 10))
+
+psat.res <- PSATinference::PSATQuadratic(y, 
+                                         cov.mat = cov.mat, 
+                                         alpha = 0.05, 
+                                         alternative = alternative, 
+                                         threshold = threshold, 
+                                         K = solve(cov.mat), 
+                                         contrast = contrasts,
+                                         pval.type = c('global', 'hybrid',
+                                                       'polyhedral', 'naive', 'switch'),
+                                         test.type = c('symmetric'))
+```
+
+
+plotting the results, we will use dplyr select function to choose which types of CI to plot.
+
+```{r, fig.width=10, echo = FALSE}
+
+plot.df <- plotFunc(psat.res$CI %>% 
+                      select(global, switch.symmetric, naive, polyhedral.symmetric),
+                    psat.res$Point.estimation,
+                    base.line = 0,
+                    truth = contrasts %*% beta.vec)
+
+plot.df
+```
+
+One does not have to restrict himself to WALD test, as any quadratic test can be used. For example the SKAT test 
+
