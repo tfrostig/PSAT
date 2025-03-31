@@ -126,7 +126,6 @@ findCIoneSide <- function(stat, lower.trunc, upper.trunc, sd, prob, sd.dist) {
                      prob = prob)
     return(bound$root)
   }
-
 }
 
 #' Returns the difference between the quantile of a truncated normal with a certain probability

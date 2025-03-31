@@ -37,7 +37,7 @@ pvalueWrapper <- function(truncation.parameters,
     contrast.samp <- sample.global.null %*% t(contrast)
     pval.df['global'] <- globalPvalues(contrast.val = truncation.parameters[ ,'x'],
                                        sample.mat   = contrast.samp,
-                                       alternative    = numToSide(truncation.parameters[ ,'alternative']))
+                                       alternative  = numToSide(truncation.parameters[ ,'alternative']))
   }
   ## Hybrid p-value
   if (any(pval.type == 'hybrid')) {

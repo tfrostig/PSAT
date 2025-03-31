@@ -1,8 +1,13 @@
 # Point estimation  -------------------------------------------------------
 
 estimationWrapper <- function(truncation.parameters,
+                              y,
                               est.type,
-                              zscore.bound) {
+                              test.mat,
+                              zscore.bound,
+                              cov.mat,
+                              threshold,
+                              optim.method) {
   est.df <- data.frame(matrix(NA, nrow = nrow(truncation.parameters), ncol = 0))
   if ('naive' %in% est.type) {
     est.df['naive'] <- truncation.parameters[ , 'x']
@@ -10,6 +15,27 @@ estimationWrapper <- function(truncation.parameters,
   if ('moment' %in% est.type) {
     est.df['moment'] <- momentEstimation(truncation.parameters = truncation.parameters,
                                          zscore.bound = zscore.bound)
+  }
+  if( "mle" %in% est.type) {
+    if(optim.method == "sgd") {
+      quadlam <- getQudraticLam(test.mat, cov.mat = cov.mat)
+      if(any(quadlam < 10e-8)) {
+        optim.method <- "Nelder-Mead"
+        warning("Test matrix nearly singualr: using Nelder-Mead for MLE computation")
+      } else {
+        sgdfit <- quadraticSGD(y, cov.mat, solve(cov.mat), test.mat, threshold,
+                               stepRate = 0.75, stepCoef = NULL,
+                               delay = 20, assumeCovergence = 800,
+                               mhIters = 40)
+        mleMu <- sgdfit$mle
+        solutionPath <- sgdfit$solutionPath
+      }
+    }
+    if(optim.method == "Nelder-Mead") {
+      mleMu <- quadraticNM(y, cov.mat, solve(cov.mat), test.mat, threshold)
+      solutionPath <- NULL
+    }
+    est.df['mle'] <- mleMu
   }
   return(est.df)
 }
@@ -64,3 +90,5 @@ muFunction <- function(x, mu, sig, lower.bound, upper.bound) {
               sig * (dnorm((lower.bound - mu) / sig) - dnorm((upper.bound - mu) / sig)) /
               (pnorm((lower.bound - mu) / sig) + 1 - pnorm((upper.bound - mu) / sig))))
 }
+
+

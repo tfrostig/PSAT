@@ -80,7 +80,8 @@ PSATQuadratic <- function(y,
                           zscore.bound = 5,
                           samp.para = list(samp.size = 10000,
                                            burn.in   = 200),
-                          optim.control = DEoptim::DEoptim.control()) {
+                          optim.control = DEoptim::DEoptim.control(),
+                          optim.method = 'Nelder-Mead') {
   ### Initalizing paramters
   p         <- length(y)
   test.val  <- drop(t(y) %*% K %*% y)
@@ -163,7 +164,12 @@ PSATQuadratic <- function(y,
 
   # Point estimation  -------------------------------------------------------
   est.df <- estimationWrapper(truncation.parameters = trunc.para.mat,
+                              y                     = y,
                               zscore.bound          = zscore.bound,
+                              test.mat              = K,
+                              cov.mat               = cov.mat,
+                              threshold             = threshold,
+                              optim.method          = optim.method,
                               est.type              = est.type)
   return(list('Pvalues' = pval.df,
               ## 'Rejection' = reject.df,
@@ -200,8 +206,8 @@ findABQuad <- function(WKC, CKC, delta) {
     A.W <-  Inf
     B.W <- -Inf
   }
-  return(c('lower' = ifelse(is.nan(B.W), B.W, -Inf), ### NaN happens if CKC 0, assuming K SPD then -inf
-           'upper' = ifelse(is.nan(A.W), A.W, Inf)))
+  return(c('lower' = ifelse(is.nan(B.W), -Inf, B.W), ### NaN happens if CKC 0, assuming K SPD then -inf
+           'upper' = ifelse(is.nan(A.W), Inf, A.W)))
 }
 
 

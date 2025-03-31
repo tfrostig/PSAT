@@ -138,4 +138,18 @@ getProbThresholdQuadratic <- function(quant, cov.mat, K, jump.size = 2) {
   return(1 - CompQuadForm::liu(quant, lambda = lambda))
 }
 
+getQudraticLam <- function(test.mat, cov.mat, justlam = TRUE) {
+  c_ <- chol(cov.mat)
+  tempmat <- c_ %*% test.mat %*% t(c_)
 
+  eig <- svd(tempmat)
+  vec <- eig$v
+  P <- t(vec)
+  lam <- eig$d
+  if(justlam) {
+    return(lam)
+  } else {
+    deltamat <- P %*% solve(t(c_))
+    return(list(lam = lam, deltamat = deltamat))
+  }
+}
